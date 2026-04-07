@@ -1,10 +1,10 @@
 """
 Export Word (.docx) comment-based coding to Excel.
 
-- 한 행 = 한 인터뷰 세그먼트(동일 본문 앵커).
-- 코더마다 별도 열(Word 코멘트 작성자 w:author). 서로 다른 코더는 한 셀에 합치지 않음.
-- 같은 코더가 같은 세그먼트에 코드를 여러 개 달면 그 셀 안에서만 '; '로 합침.
-- 어떤 세그먼트를 특정 코더가 코딩하지 않았으면 해당 열은 빈 칸.
+- One row per interview segment (same anchored body text).
+- One column per coder (Word comment w:author); different coders are never merged in one cell.
+- Multiple codes from the same coder on the same segment are joined with '; ' in that cell only.
+- Blank cell if a coder did not code that segment.
 
 Requires: openpyxl (pip install openpyxl)
 Offline; reads OOXML inside .docx (zip).
@@ -104,15 +104,14 @@ def _normalize_segment_text(s: str) -> str:
 
 
 def _author_key(name: str) -> str:
-    """빈 작성자는 한 열로 묶음."""
+    """Map empty author to a single placeholder column."""
     n = (name or "").strip()
     return n if n else "(no author)"
 
 
 def _format_transcript_layout(s: str) -> str:
     """
-    녹취록처럼 'P02 mm:ss' 또는 'Interviewer mm:ss' 직후에 줄바꿈을 넣습니다.
-    타임스탬프 뒤 공백은 제거하고 본문은 다음 줄부터 이어집니다.
+    Insert a newline after 'P02 mm:ss' or 'Interviewer mm:ss' (transcript-style line break).
     """
     if not s:
         return s
@@ -145,7 +144,7 @@ def extract_file(path: str) -> List[Tuple[str, str, str, str]]:
 
 
 def _write_excel_workbook(all_rows: List[dict], output_path: str) -> None:
-    """all_rows 항목은 `_author_codes` 키를 포함해야 함. 저장 후 해당 키는 제거됨."""
+    """Each row dict must include `_author_codes`; that key is removed after save."""
     author_columns: List[str] = sorted(
         {a for r in all_rows for a in r["_author_codes"].keys()}
     )
@@ -188,20 +187,20 @@ def export_docx_paths_to_xlsx(
     paths: List[str], output_path: str
 ) -> tuple[int, List[str]]:
     """
-    여러 .docx 경로를 처리해 xlsx로 저장합니다.
+    Process .docx files and write one .xlsx.
 
     Returns:
-        (작성된 행 수, 코멘트가 없어 건너뛴 파일 이름 목록)
+        (number of rows written, basenames skipped because they had no comments)
 
     Raises:
-        ValueError: 처리할 데이터가 없을 때
-        ImportError: openpyxl 미설치
+        ValueError: nothing to export
+        ImportError: openpyxl not installed
     """
     try:
         import openpyxl  # noqa: F401
     except ImportError as e:
         raise ImportError(
-            "openpyxl이 필요합니다: python -m pip install openpyxl"
+            "Install openpyxl: python -m pip install openpyxl"
         ) from e
 
     all_rows: List[dict] = []
@@ -223,7 +222,7 @@ def export_docx_paths_to_xlsx(
 
     if not all_rows:
         raise ValueError(
-            "저장할 데이터가 없습니다. Word 코멘트가 있는 .docx인지 확인하세요."
+            "No data to export. Check that your .docx files contain Word comments."
         )
 
     _write_excel_workbook(all_rows, output_path)
@@ -234,8 +233,8 @@ def build_segment_rows(
     file_label: str, per_comment: List[Tuple[str, str, str, str]]
 ) -> List[dict]:
     """
-    파일 내에서 정규화된 세그먼트별로 묶고, 코더(작성자)별로만 코드를 '; '로 합침.
-    코더 간에는 한 열에 넣지 않고, 엑셀에서는 작성자 이름 열로 분리됨.
+    Group by normalized segment within the file; merge codes with '; ' per author only.
+    Different authors become separate Excel columns (not merged in one cell).
     """
     groups: Dict[str, List[Tuple[str, str, str, str]]] = defaultdict(list)
     for row in per_comment:

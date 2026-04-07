@@ -1,9 +1,9 @@
 """
-Word 코딩 추출 — 간단 GUI (tkinter, 별도 패키지 없음).
+Simple tkinter GUI for exporting Word comment coding to Excel (no extra deps).
 
-실행: 이 폴더에서
+Run from this folder:
   python export_segments_gui.py
-또는 Run_Export_GUI.bat 더블클릭
+Or double-click Run_Export_GUI.bat
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-# 같은 폴더의 모듈 import (스크립트 직접 실행 시)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
@@ -34,11 +33,11 @@ class App(tk.Tk):
 
         ttk.Label(
             self,
-            text="처리할 Word 파일(.docx)을 아래 목록에 넣은 뒤, 저장할 엑셀 위치를 정하고 실행하세요.",
+            text="Add Word (.docx) files to the list below, choose where to save the Excel file, then click Export.",
             wraplength=520,
         ).pack(anchor="w", **pad)
 
-        lf = ttk.LabelFrame(self, text="입력 파일")
+        lf = ttk.LabelFrame(self, text="Input files")
         lf.pack(fill="both", expand=True, **pad)
 
         inner = ttk.Frame(lf)
@@ -46,16 +45,16 @@ class App(tk.Tk):
 
         btn_row = ttk.Frame(inner)
         btn_row.pack(fill="x")
-        ttk.Button(btn_row, text="파일 추가…", command=self._add_files).pack(
+        ttk.Button(btn_row, text="Add files…", command=self._add_files).pack(
             side="left", padx=(0, 8)
         )
-        ttk.Button(btn_row, text="폴더에서 모두 추가…", command=self._add_folder).pack(
+        ttk.Button(btn_row, text="Add folder…", command=self._add_folder).pack(
             side="left", padx=(0, 8)
         )
-        ttk.Button(btn_row, text="선택 항목 제거", command=self._remove_sel).pack(
+        ttk.Button(btn_row, text="Remove selected", command=self._remove_sel).pack(
             side="left", padx=(0, 8)
         )
-        ttk.Button(btn_row, text="목록 비우기", command=self._clear).pack(side="left")
+        ttk.Button(btn_row, text="Clear list", command=self._clear).pack(side="left")
 
         scroll = ttk.Scrollbar(inner)
         scroll.pack(side="right", fill="y")
@@ -69,7 +68,7 @@ class App(tk.Tk):
         self._list.pack(side="left", fill="both", expand=True)
         scroll.config(command=self._list.yview)
 
-        out_fr = ttk.LabelFrame(self, text="저장할 엑셀")
+        out_fr = ttk.LabelFrame(self, text="Output Excel")
         out_fr.pack(fill="x", **pad)
         of = ttk.Frame(out_fr)
         of.pack(fill="x", padx=6, pady=6)
@@ -77,11 +76,11 @@ class App(tk.Tk):
             value=os.path.join(os.path.expanduser("~"), "Desktop", "Coding_Matrix_Result.xlsx")
         )
         ttk.Entry(of, textvariable=self._out).pack(side="left", fill="x", expand=True)
-        ttk.Button(of, text="다른 이름으로…", command=self._pick_save).pack(
+        ttk.Button(of, text="Save as…", command=self._pick_save).pack(
             side="left", padx=(8, 0)
         )
 
-        ttk.Button(self, text="엑셀 만들기", command=self._run).pack(**pad)
+        ttk.Button(self, text="Export to Excel", command=self._run).pack(**pad)
 
         self.status = ttk.Label(self, text="", foreground="#333")
         self.status.pack(anchor="w", padx=10, pady=(0, 8))
@@ -93,8 +92,8 @@ class App(tk.Tk):
 
     def _add_files(self) -> None:
         files = filedialog.askopenfilenames(
-            title="Word 파일 선택",
-            filetypes=[("Word 문서", "*.docx"), ("모든 파일", "*.*")],
+            title="Select Word files",
+            filetypes=[("Word documents", "*.docx"), ("All files", "*.*")],
         )
         for p in files:
             ap = os.path.abspath(p)
@@ -104,7 +103,7 @@ class App(tk.Tk):
         self._hint()
 
     def _add_folder(self) -> None:
-        d = filedialog.askdirectory(title="폴더 선택 (.docx 모두 포함)")
+        d = filedialog.askdirectory(title="Select folder (all .docx files will be added)")
         if not d:
             return
         d = os.path.abspath(d)
@@ -133,9 +132,9 @@ class App(tk.Tk):
 
     def _pick_save(self) -> None:
         p = filedialog.asksaveasfilename(
-            title="엑셀 저장 위치",
+            title="Save Excel as",
             defaultextension=".xlsx",
-            filetypes=[("Excel", "*.xlsx")],
+            filetypes=[("Excel workbook", "*.xlsx")],
             initialfile="Coding_Matrix_Result.xlsx",
         )
         if p:
@@ -143,39 +142,39 @@ class App(tk.Tk):
 
     def _hint(self) -> None:
         n = len(self.paths)
-        self.status.config(text=f"대기 중 — 입력 파일 {n}개")
+        self.status.config(text=f"Ready — {n} file(s) in list")
 
     def _run(self) -> None:
         if not self.paths:
-            messagebox.showwarning("입력 없음", "Word 파일을 하나 이상 추가하세요.")
+            messagebox.showwarning("No input", "Add at least one Word (.docx) file.")
             return
         out = self._out.get().strip()
         if not out:
-            messagebox.showwarning("저장 위치", "저장할 .xlsx 경로를 지정하세요.")
+            messagebox.showwarning("Output path", "Choose where to save the .xlsx file.")
             return
         out = os.path.abspath(out)
-        self.status.config(text="처리 중…")
+        self.status.config(text="Working…")
         self.update_idletasks()
         try:
             n, skipped = export_docx_paths_to_xlsx(self.paths, out)
         except ValueError as e:
             self.status.config(text="")
-            messagebox.showerror("실패", str(e))
+            messagebox.showerror("Export failed", str(e))
             return
         except ImportError as e:
             self.status.config(text="")
-            messagebox.showerror("패키지", str(e))
+            messagebox.showerror("Missing package", str(e))
             return
         except OSError as e:
             self.status.config(text="")
-            messagebox.showerror("파일 오류", str(e))
+            messagebox.showerror("File error", str(e))
             return
 
-        msg = f"{n}행을 저장했습니다.\n\n{out}"
+        msg = f"Saved {n} row(s).\n\n{out}"
         if skipped:
-            msg += "\n\n다음 파일은 코멘트가 없어 건너뜀:\n• " + "\n• ".join(skipped)
-        self.status.config(text=f"완료 — {n}행 → {os.path.basename(out)}")
-        messagebox.showinfo("완료", msg)
+            msg += "\n\nSkipped (no comments):\n• " + "\n• ".join(skipped)
+        self.status.config(text=f"Done — {n} row(s) → {os.path.basename(out)}")
+        messagebox.showinfo("Done", msg)
 
 
 def main() -> None:
