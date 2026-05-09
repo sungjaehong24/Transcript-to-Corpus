@@ -1,9 +1,13 @@
 """
 Export Word (.docx) qualitative coding to Excel.
 
-**Default:** one row per Word comment anchor with highlighted transcript text mapped
-to qualitative codes according to highlight color + optional comment wording
-(the built-in mapping matches the project's “List of codes” reference table).
+**Default:** one row per unique **quote** within a file. Several comments on the same
+anchored text merge into that row; the **code** column lists labels joined with **'; '**
+(in a stable project order). Highlight colours collapse near-synonyms (e.g. gray vs
+dark gray; green vs bright green). All grey-shade highlights rely on comment wording
+when appraisal codes apply, otherwise **Information Source**.
+
+Mapping matches the project’s “List of codes” table using highlight + comment text.
 
 **Legacy:** `--coder-matrix` restores the older layout (one column per Word comment author).
 
@@ -22,6 +26,13 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+# Word stores slightly different highlight names across versions/themes; collapse families.
+_GRAY_HIGHLIGHTS = frozenset(
+    {"lightgray", "lightgrey", "gray", "grey", "darkgray", "darkgrey"}
+)
+_GREEN_HIGHLIGHTS = frozenset({"green", "brightgreen", "darkgreen"})
+_TEAL_HIGHLIGHTS = frozenset({"darkcyan", "teal"})
 
 
 def _w(tag: str) -> str:
@@ -165,10 +176,52 @@ def _norm_hi_text(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _highlight_family_bucket(raw: Optional[str]) -> str:
+    """
+    OOXML highlight token → semantic bucket ('gray', 'green', 'teal', …).
+    Tokens not listed pass through lowercase (yellow, cyan, …).
+    """
+    if not raw:
+        return ""
+    h = str(raw).strip().lower()
+    if h in _GRAY_HIGHLIGHTS:
+        return "gray"
+    if h in _GREEN_HIGHLIGHTS:
+        return "green"
+    if h in _TEAL_HIGHLIGHTS:
+        return "teal"
+    return h
+
+
+_CODE_SORT_PRIORITY: Dict[str, int] = {
+    name: idx
+    for idx, name in enumerate(
+        [
+            "IBM",
+            "Belonging",
+            "Motivation",
+            "Source Appraisal",
+            "Information Appraisal",
+            "Information Source",
+            "Cues",
+            "Event Appraisal",
+            "Facilitators",
+            "Barriers",
+            "Other",
+        ],
+    )
+}
+
+
+def _canonical_sort_code_labels(labels: List[str]) -> List[str]:
+    dedup = list(dict.fromkeys(labels))
+    return sorted(dedup, key=lambda x: (_CODE_SORT_PRIORITY.get(x, 1000), x.lower()))
+
+
 def _merged_highlight_chunks(
     ordered_runs: List[ET.Element],
 ) -> List[Tuple[str, str]]:
-    """Contiguous runs with the same w:highlight value → single (color, text)."""
+    """Contiguous runs sharing the same highlight *family* (gray/green/teal…) → chunk."""
     out: List[Tuple[str, str]] = []
     i = 0
     n = len(ordered_runs)
@@ -179,12 +232,13 @@ def _merged_highlight_chunks(
             i += 1
             continue
         hv = hv.lower()
+        fam = _highlight_family_bucket(hv)
         pieces = [_norm_hi_text(_collect_run_plain_text(r))]
         i += 1
         while i < n:
             r2 = ordered_runs[i]
             hv2 = _highlight_on_run(r2)
-            if hv2 and hv2.lower() == hv:
+            if hv2 and _highlight_family_bucket(hv2) == fam:
                 pieces.append(_norm_hi_text(_collect_run_plain_text(r2)))
                 i += 1
                 continue
@@ -199,18 +253,53 @@ def _merged_highlight_chunks(
 
 
 def _dominant_highlight(chunks: List[Tuple[str, str]]) -> Optional[str]:
+    """Winner by highlighted character count; merges grey/green families when chunking."""
     if not chunks:
         return None
-    by_len = defaultdict(str)
+    totals: Dict[str, Tuple[int, str]] = {}
     for c, tx in chunks:
-        by_len[c] += tx
-    return max(by_len.keys(), key=lambda k: len(by_len[k]))
+        fam = _highlight_family_bucket(c)
+        key = fam if fam else str(c).lower()
+        ln = len(tx)
+        if key not in totals:
+            totals[key] = (ln, str(c))
+        else:
+            prev_len, prev_s = totals[key]
+            totals[key] = (prev_len + ln, prev_s)
+    win = max(totals.keys(), key=lambda k: totals[k][0])
+    return totals[win][1]
 
 
-def _quote_for_highlight(chunks: List[Tuple[str, str]], color: str) -> str:
-    cx = color.lower()
-    parts = [t for hc, t in chunks if hc == cx]
+def _quote_for_highlight(chunks: List[Tuple[str, str]], dominant_raw: str) -> str:
+    if not dominant_raw:
+        return ""
+    df = _highlight_family_bucket(dominant_raw)
+    parts: List[str] = []
+    for hc, t in chunks:
+        if df and _highlight_family_bucket(hc) == df:
+            parts.append(t)
+        elif not df and str(hc).lower() == str(dominant_raw).lower():
+            parts.append(t)
     return _norm_hi_text(" ".join(parts))
+
+
+def _codes_from_comment_only(clo: str) -> List[str]:
+    """Highlight missing; recover IBM/Belonging or appraisal phrases from comment text."""
+    codes: List[str] = []
+    if "information appraisal" in clo:
+        codes.append("Information Appraisal")
+    if "source appraisal" in clo:
+        codes.append("Source Appraisal")
+    if codes:
+        return _canonical_sort_code_labels(codes)
+    g: List[str] = []
+    if "ibm" in clo:
+        g.append("IBM")
+    if "belonging" in clo:
+        g.append("Belonging")
+    if g:
+        return _canonical_sort_code_labels(g)
+    return []
 
 
 def _code_from_highlight_and_comment(
@@ -218,78 +307,99 @@ def _code_from_highlight_and_comment(
     comment_body: str,
 ) -> Tuple[str, List[str]]:
     """
-    Resolve canonical code label from highlight + comment content.
-    Returns (code_or_empty_string, stderr_warning_lines).
-
-    Matches the project's “List of codes” specification (bright green / gray
-    disambiguated by comment text).
+    Returns (code string, possibly multiple labels joined with '; ', stderr warnings).
+    Gray / green families tolerate Word naming drift; multi-label when comment supports it.
     """
     warn: List[str] = []
-    cmt = comment_body.strip()
-    clo = cmt.lower()
-    hv = dominant_hl.lower() if dominant_hl else ""
+    clo = comment_body.strip().lower()
+    bucket = _highlight_family_bucket(dominant_hl)
+    codes: List[str] = []
 
-    # Comment-only salvage if highlights are missing inside the anchor (export still works).
-    if not hv:
+    if not bucket:
+        codes = _codes_from_comment_only(clo)
+        if not codes:
+            return "", warn
+        return "; ".join(_canonical_sort_code_labels(codes)), warn
+
+    if bucket == "gray":
         if "information appraisal" in clo:
-            return "Information Appraisal", warn
+            codes.append("Information Appraisal")
         if "source appraisal" in clo:
-            return "Source Appraisal", warn
-        if "belonging" in clo:
-            return "Belonging", warn
-        if "ibm" in clo:
-            return "IBM", warn
-
-    if hv == "lightgray":
+            codes.append("Source Appraisal")
+        if codes:
+            return "; ".join(_canonical_sort_code_labels(codes)), warn
         return "Information Source", warn
 
-    if hv == "yellow":
-        return "Cues", warn
-
-    # Event Appraisal: dark teal / blue-green → Word OOXML highlights
-    if hv in ("darkcyan", "teal"):
-        return "Event Appraisal", warn
-
-    if hv == "cyan":
-        return "Facilitators", warn
-
-    if hv == "red":
-        return "Barriers", warn
-
-    if hv == "magenta":
-        return "Other", warn
-
-    if hv == "brightgreen":
-        if "belonging" in clo:
-            return "Belonging", warn
+    if bucket == "green":
         if "ibm" in clo:
-            return "IBM", warn
+            codes.append("IBM")
+        if "belonging" in clo:
+            codes.append("Belonging")
+        if codes:
+            return "; ".join(_canonical_sort_code_labels(codes)), warn
         return "Motivation", warn
 
-    if hv == "darkgray":
-        if "source appraisal" in clo:
-            return "Source Appraisal", warn
-        if "information appraisal" in clo:
-            return "Information Appraisal", warn
-        warn.append(
-            "[warn] Dark Gray highlight requires comment mentioning "
-            "\"Source appraisal\" or \"Information appraisal\".",
-        )
-        return "", warn
+    if bucket == "teal":
+        return "Event Appraisal", warn
 
-    if dominant_hl is None or not hv:
-        return "", warn
+    if bucket == "yellow":
+        return "Cues", warn
+
+    if bucket == "cyan":
+        return "Facilitators", warn
+
+    if bucket == "red":
+        return "Barriers", warn
+
+    if bucket == "magenta":
+        return "Other", warn
 
     warn.append(
-        f"[warn] Unrecognized highlight color for automatic mapping: {dominant_hl!r}",
+        f"[warn] Unrecognized highlight colour for automatic mapping: {dominant_hl!r}",
     )
     return "", warn
 
 
+def _cid_sort_tuple(cid: str) -> Tuple[int | str, str]:
+    cid = str(cid)
+    return (int(cid), cid) if cid.isdigit() else (cid, cid)
+
+
+def _merge_highlight_rows_same_quote(rows: List[dict]) -> List[dict]:
+    """Same quote + multiple Word comments → one row, codes '; '-joined."""
+    buckets: Dict[str, List[dict]] = defaultdict(list)
+    first_seen: Dict[str, int] = {}
+    for pos, row in enumerate(rows):
+        q = row["quote"]
+        buckets[q].append(row)
+        if q not in first_seen:
+            first_seen[q] = pos
+    out: List[dict] = []
+    for quote in sorted(buckets.keys(), key=lambda qq: first_seen[qq]):
+        grp = buckets[quote]
+        grp.sort(key=lambda r: _cid_sort_tuple(str(r.get("comment_id", ""))))
+
+        uniq: Dict[str, None] = {}
+        merged_warns: List[str] = []
+        for r in grp:
+            merged_warns.extend(r.get("_warns") or [])
+            raw = str(r.get("code") or "").strip()
+            if not raw:
+                continue
+            for fragment in re.split(r"\s*;\s*", raw):
+                lbl = fragment.strip()
+                if lbl:
+                    uniq[lbl] = None
+        code_cell = "; ".join(_canonical_sort_code_labels(list(uniq.keys())))
+        out.append({"quote": quote, "code": code_cell, "_warns": merged_warns})
+    return out
+
+
 def extract_highlight_rows(path: str) -> List[dict]:
     """
-    One Word comment anchor → one row dict with keys:
-    quote, code, raw_comment (author kept for diagnostics only).
+    One preliminary row per Word comment (before same-quote merge).
+
+    Each dict has: comment_id, quote, code, raw_comment, author, _warns.
     """
     rows_out: List[dict] = []
     with zipfile.ZipFile(path, "r") as zf:
@@ -322,6 +432,7 @@ def extract_highlight_rows(path: str) -> List[dict]:
 
             rows_out.append(
                 {
+                    "comment_id": cid,
                     "quote": quote_norm,
                     "code": code.strip(),
                     "raw_comment": comment_body,
@@ -348,7 +459,7 @@ def _write_three_column_sheet(rows: List[dict], output_path: str) -> None:
             cell.alignment = wrap
     ws.column_dimensions["A"].width = 8
     ws.column_dimensions["B"].width = 88
-    ws.column_dimensions["C"].width = 28
+    ws.column_dimensions["C"].width = 40
 
     out_path = os.path.abspath(output_path)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -369,7 +480,7 @@ def export_highlight_paths_to_xlsx(paths: List[str], output_path: str) -> tuple[
         if not os.path.isfile(p):
             continue
         label = os.path.basename(p)
-        per = extract_highlight_rows(p)
+        per = _merge_highlight_rows_same_quote(extract_highlight_rows(p))
         if not per:
             skipped.append(label)
             continue
