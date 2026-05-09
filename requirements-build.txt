@@ -1,0 +1,2 @@
+# Optional: build a standalone GUI .exe (Windows/macOS/Linux)
+pyinstaller>=6.0
