@@ -26,6 +26,7 @@ class App(tk.Tk):
         self.title("Interview coding → Excel")
         self.minsize(560, 420)
         self.paths: list[str] = []
+        self._coder_matrix_legacy = tk.BooleanVar(value=False)
         self._build()
 
     def _build(self) -> None:
@@ -33,8 +34,18 @@ class App(tk.Tk):
 
         ttk.Label(
             self,
-            text="Add Word (.docx) files to the list below, choose where to save the Excel file, then click Export.",
+            text=(
+                "Add coded Word (.docx) files, choose export path, Export. Default: columns "
+                "no / quote / code from highlight colours + appraisal comments "
+                '(see project “List of codes”). Tick “Coder matrix…” for legacy one-column-per-author.'
+            ),
             wraplength=520,
+        ).pack(anchor="w", **pad)
+
+        ttk.Checkbutton(
+            self,
+            text="Coder matrix export (legacy: one Excel column per comment author)",
+            variable=self._coder_matrix_legacy,
         ).pack(anchor="w", **pad)
 
         lf = ttk.LabelFrame(self, text="Input files")
@@ -156,7 +167,11 @@ class App(tk.Tk):
         self.status.config(text="Working…")
         self.update_idletasks()
         try:
-            n, skipped = export_docx_paths_to_xlsx(self.paths, out)
+            n, skipped = export_docx_paths_to_xlsx(
+                self.paths,
+                out,
+                coder_matrix=self._coder_matrix_legacy.get(),
+            )
         except ValueError as e:
             self.status.config(text="")
             messagebox.showerror("Export failed", str(e))

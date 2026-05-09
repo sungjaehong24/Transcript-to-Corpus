@@ -1,13 +1,13 @@
 """
-Export Word (.docx) comment-based coding to Excel.
+Export Word (.docx) qualitative coding to Excel.
 
-- One row per interview segment (same anchored body text).
-- One column per coder (Word comment w:author); different coders are never merged in one cell.
-- Multiple codes from the same coder on the same segment are joined with '; ' in that cell only.
-- Blank cell if a coder did not code that segment.
+**Default:** one row per Word comment anchor with highlighted transcript text mapped
+to qualitative codes according to highlight color + optional comment wording
+(the built-in mapping matches the project's “List of codes” reference table).
 
-Requires: openpyxl (pip install openpyxl)
-Offline; reads OOXML inside .docx (zip).
+**Legacy:** `--coder-matrix` restores the older layout (one column per Word comment author).
+
+Requires: openpyxl. Reads OOXML inside .docx (zip files). Offline; no APIs.
 """
 
 from __future__ import annotations
@@ -15,10 +15,11 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import sys
 import zipfile
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -31,8 +32,14 @@ def _local(tag: str) -> str:
     return tag.split("}")[-1] if "}" in tag else tag
 
 
-def _attr_id(elem: ET.Element) -> str | None:
-    """w:id on comment range elements (namespace may vary)."""
+def _attrib_val(attrs: dict) -> Optional[str]:
+    for key, val in attrs.items():
+        if key.endswith("}val") or key == "val":
+            return val
+    return None
+
+
+def _attr_id(elem: ET.Element) -> Optional[str]:
     for key, val in elem.attrib.items():
         if key.endswith("}id") or key == "id":
             return val
@@ -51,9 +58,6 @@ def _collect_w_t_text(node: ET.Element) -> str:
 
 
 def _parse_comments_xml(zf: zipfile.ZipFile) -> Dict[str, Tuple[str, str]]:
-    """
-    comment_id -> (author, comment_body_text)
-    """
     try:
         data = zf.read("word/comments.xml")
     except KeyError:
@@ -73,46 +77,13 @@ def _parse_comments_xml(zf: zipfile.ZipFile) -> Dict[str, Tuple[str, str]]:
     return out
 
 
-def _segment_text_for_comment(doc_root: ET.Element, comment_id: str) -> str:
-    """Text strictly between commentRangeStart and commentRangeEnd (document order)."""
-    start_tag = _w("commentRangeStart")
-    end_tag = _w("commentRangeEnd")
-    order = list(doc_root.iter())
-    start_idx = end_idx = None
-    for i, el in enumerate(order):
-        if el.tag == start_tag and _attr_id(el) == comment_id:
-            start_idx = i
-        if el.tag == end_tag and _attr_id(el) == comment_id:
-            end_idx = i
-    if start_idx is None or end_idx is None or end_idx <= start_idx:
-        return ""
-    parts: List[str] = []
-    for i in range(start_idx + 1, end_idx):
-        el = order[i]
-        if _local(el.tag) == "t":
-            if el.text:
-                parts.append(el.text)
-            if el.tail:
-                parts.append(el.tail)
-    return "".join(parts)
-
-
 def _normalize_segment_text(s: str) -> str:
     s = s.replace("\u00a0", " ")
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
-def _author_key(name: str) -> str:
-    """Map empty author to a single placeholder column."""
-    n = (name or "").strip()
-    return n if n else "(no author)"
-
-
 def _format_transcript_layout(s: str) -> str:
-    """
-    Insert a newline after 'P02 mm:ss' or 'Interviewer mm:ss' (transcript-style line break).
-    """
     if not s:
         return s
     return re.sub(
@@ -122,10 +93,305 @@ def _format_transcript_layout(s: str) -> str:
     )
 
 
-def extract_file(path: str) -> List[Tuple[str, str, str, str]]:
+def _flatten_doc(elem: ET.Element) -> List[ET.Element]:
+    return list(elem.iter())
+
+
+def _segment_anchor_indices(
+    doc_root: ET.Element, comment_id: str
+) -> Tuple[Optional[int], Optional[int]]:
+    start_tag = _w("commentRangeStart")
+    end_tag = _w("commentRangeEnd")
+    flat = _flatten_doc(doc_root)
+    si = ei = None
+    for idx, el in enumerate(flat):
+        if el.tag == start_tag and _attr_id(el) == comment_id:
+            si = idx
+        if el.tag == end_tag and _attr_id(el) == comment_id:
+            ei = idx
+            break
+    return si, ei
+
+
+def _runs_between_anchor_indices(
+    doc_root: ET.Element, start_idx: int, end_idx: int
+) -> List[ET.Element]:
+    flat = _flatten_doc(doc_root)
+    return [
+        el
+        for idx, el in enumerate(flat)
+        if start_idx < idx < end_idx and el.tag == _w("r")
+    ]
+
+
+def _segment_text_for_comment(doc_root: ET.Element, comment_id: str) -> str:
+    si, ei = _segment_anchor_indices(doc_root, comment_id)
+    if si is None or ei is None or ei <= si:
+        return ""
+    flat = _flatten_doc(doc_root)
+    parts: List[str] = []
+    for idx in range(si + 1, ei):
+        el = flat[idx]
+        if _local(el.tag) == "t":
+            if el.text:
+                parts.append(el.text)
+            if el.tail:
+                parts.append(el.tail)
+    return "".join(parts)
+
+
+def _highlight_on_run(run: ET.Element) -> Optional[str]:
+    for child in run:
+        if _local(child.tag) != "rPr":
+            continue
+        for rp in child:
+            if _local(rp.tag) != "highlight":
+                continue
+            v = _attrib_val(rp.attrib)
+            if not v:
+                continue
+            vlow = str(v).strip().lower()
+            return None if vlow == "none" else vlow
+        break
+    return None
+
+
+def _collect_run_plain_text(run: ET.Element) -> str:
+    return "".join(run.itertext())
+
+
+def _norm_hi_text(s: str) -> str:
+    s = s.replace("\u00a0", " ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _merged_highlight_chunks(
+    ordered_runs: List[ET.Element],
+) -> List[Tuple[str, str]]:
+    """Contiguous runs with the same w:highlight value → single (color, text)."""
+    out: List[Tuple[str, str]] = []
+    i = 0
+    n = len(ordered_runs)
+    while i < n:
+        r = ordered_runs[i]
+        hv = _highlight_on_run(r)
+        if not hv:
+            i += 1
+            continue
+        hv = hv.lower()
+        pieces = [_norm_hi_text(_collect_run_plain_text(r))]
+        i += 1
+        while i < n:
+            r2 = ordered_runs[i]
+            hv2 = _highlight_on_run(r2)
+            if hv2 and hv2.lower() == hv:
+                pieces.append(_norm_hi_text(_collect_run_plain_text(r2)))
+                i += 1
+                continue
+            if not _norm_hi_text(_collect_run_plain_text(r2)):
+                i += 1
+                continue
+            break
+        joined = _norm_hi_text("".join(pieces))
+        if joined:
+            out.append((hv, joined))
+    return out
+
+
+def _dominant_highlight(chunks: List[Tuple[str, str]]) -> Optional[str]:
+    if not chunks:
+        return None
+    by_len = defaultdict(str)
+    for c, tx in chunks:
+        by_len[c] += tx
+    return max(by_len.keys(), key=lambda k: len(by_len[k]))
+
+
+def _quote_for_highlight(chunks: List[Tuple[str, str]], color: str) -> str:
+    cx = color.lower()
+    parts = [t for hc, t in chunks if hc == cx]
+    return _norm_hi_text(" ".join(parts))
+
+
+def _code_from_highlight_and_comment(
+    dominant_hl: Optional[str],
+    comment_body: str,
+) -> Tuple[str, List[str]]:
     """
-    Returns list of (comment_id, author, segment_text, code_text) per comment.
+    Resolve canonical code label from highlight + comment content.
+    Returns (code_or_empty_string, stderr_warning_lines).
+
+    Matches the project's “List of codes” specification (bright green / gray
+    disambiguated by comment text).
     """
+    warn: List[str] = []
+    cmt = comment_body.strip()
+    clo = cmt.lower()
+    hv = dominant_hl.lower() if dominant_hl else ""
+
+    # Comment-only salvage if highlights are missing inside the anchor (export still works).
+    if not hv:
+        if "information appraisal" in clo:
+            return "Information Appraisal", warn
+        if "source appraisal" in clo:
+            return "Source Appraisal", warn
+        if "belonging" in clo:
+            return "Belonging", warn
+        if "ibm" in clo:
+            return "IBM", warn
+
+    if hv == "lightgray":
+        return "Information Source", warn
+
+    if hv == "yellow":
+        return "Cues", warn
+
+    # Event Appraisal: dark teal / blue-green → Word OOXML highlights
+    if hv in ("darkcyan", "teal"):
+        return "Event Appraisal", warn
+
+    if hv == "cyan":
+        return "Facilitators", warn
+
+    if hv == "red":
+        return "Barriers", warn
+
+    if hv == "magenta":
+        return "Other", warn
+
+    if hv == "brightgreen":
+        if "belonging" in clo:
+            return "Belonging", warn
+        if "ibm" in clo:
+            return "IBM", warn
+        return "Motivation", warn
+
+    if hv == "darkgray":
+        if "source appraisal" in clo:
+            return "Source Appraisal", warn
+        if "information appraisal" in clo:
+            return "Information Appraisal", warn
+        warn.append(
+            "[warn] Dark Gray highlight requires comment mentioning "
+            "\"Source appraisal\" or \"Information appraisal\".",
+        )
+        return "", warn
+
+    if dominant_hl is None or not hv:
+        return "", warn
+
+    warn.append(
+        f"[warn] Unrecognized highlight color for automatic mapping: {dominant_hl!r}",
+    )
+    return "", warn
+
+
+def extract_highlight_rows(path: str) -> List[dict]:
+    """
+    One Word comment anchor → one row dict with keys:
+    quote, code, raw_comment (author kept for diagnostics only).
+    """
+    rows_out: List[dict] = []
+    with zipfile.ZipFile(path, "r") as zf:
+        try:
+            doc_xml = zf.read("word/document.xml")
+        except KeyError:
+            return rows_out
+        doc_root = ET.fromstring(doc_xml)
+        comments = _parse_comments_xml(zf)
+
+        def cid_key(cid: str) -> Tuple[int | str, str]:
+            return (int(cid) if cid.isdigit() else cid, cid)
+
+        for cid in sorted(comments.keys(), key=cid_key):
+            author, comment_body = comments[cid]
+            si, ei = _segment_anchor_indices(doc_root, cid)
+            ordered_runs: List[ET.Element] = []
+            if si is not None and ei is not None and ei > si:
+                ordered_runs = _runs_between_anchor_indices(doc_root, si, ei)
+            chunks = _merged_highlight_chunks(ordered_runs)
+            hl_dom = _dominant_highlight(chunks)
+            quote = _quote_for_highlight(chunks, hl_dom) if hl_dom else ""
+
+            raw_seg = _segment_text_for_comment(doc_root, cid)
+            raw_seg_norm = _normalize_segment_text(raw_seg)
+            quote_norm = quote or _normalize_segment_text(raw_seg)
+            quote_norm = _format_transcript_layout(quote_norm)
+
+            code, warns = _code_from_highlight_and_comment(hl_dom, comment_body)
+
+            rows_out.append(
+                {
+                    "quote": quote_norm,
+                    "code": code.strip(),
+                    "raw_comment": comment_body,
+                    "author": author,
+                    "_warns": warns,
+                },
+            )
+
+    return rows_out
+
+
+def _write_three_column_sheet(rows: List[dict], output_path: str) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Coding"
+    ws.append(["no", "quote", "code"])
+    wrap = Alignment(wrap_text=True, vertical="top")
+    for i, row in enumerate(rows, start=1):
+        ws.append([i, row["quote"], row["code"]])
+        for cell in ws[i + 1]:
+            cell.alignment = wrap
+    ws.column_dimensions["A"].width = 8
+    ws.column_dimensions["B"].width = 88
+    ws.column_dimensions["C"].width = 28
+
+    out_path = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    wb.save(out_path)
+
+
+def export_highlight_paths_to_xlsx(paths: List[str], output_path: str) -> tuple[int, List[str]]:
+    """Write merged no/quote/code export; returns (rows, skipped_basenames)."""
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError as e:
+        raise ImportError("Install openpyxl: python -m pip install openpyxl") from e
+
+    all_rows: List[dict] = []
+    skipped: List[str] = []
+    for p in paths:
+        p = os.path.abspath(p)
+        if not os.path.isfile(p):
+            continue
+        label = os.path.basename(p)
+        per = extract_highlight_rows(p)
+        if not per:
+            skipped.append(label)
+            continue
+        all_rows.extend(per)
+
+        for r in per:
+            for ln in r.pop("_warns", []) or []:
+                print(f"{label}: {ln}", file=sys.stderr)
+
+    if not all_rows:
+        raise ValueError(
+            "No data to export. Check that inputs are .docx with Word comments.",
+        )
+
+    _write_three_column_sheet(all_rows, output_path)
+    return len(all_rows), skipped
+
+
+# -----------------------------------------------------------------------------
+# Legacy: one row per anchored segment grouped by normalized text × author columns
+
+def extract_file_legacy(path: str) -> List[Tuple[str, str, str, str]]:
     rows: List[Tuple[str, str, str, str]] = []
     with zipfile.ZipFile(path, "r") as zf:
         try:
@@ -143,99 +409,14 @@ def extract_file(path: str) -> List[Tuple[str, str, str, str]]:
     return rows
 
 
-def _write_excel_workbook(all_rows: List[dict], output_path: str) -> None:
-    """Each row dict must include `_author_codes`; that key is removed after save."""
-    author_columns: List[str] = sorted(
-        {a for r in all_rows for a in r["_author_codes"].keys()}
-    )
-
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment
-    from openpyxl.utils import get_column_letter
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Coding"
-    cols = ["Segment_ID", "File_Name", "Coding_Segment", *author_columns]
-    ws.append(cols)
-    for r in all_rows:
-        ac = r["_author_codes"]
-        row = [r["Segment_ID"], r["File_Name"], r["Coding_Segment"]]
-        row.extend(ac.get(name, "") for name in author_columns)
-        ws.append(row)
-
-    wrap_top = Alignment(wrap_text=True, vertical="top")
-    max_col = 3 + len(author_columns)
-    for row in ws.iter_rows(min_row=2, min_col=2, max_col=max_col):
-        for cell in row:
-            cell.alignment = wrap_top
-    ws.column_dimensions["A"].width = 12
-    ws.column_dimensions["B"].width = 22
-    ws.column_dimensions["C"].width = 88
-    for i, _name in enumerate(author_columns, start=4):
-        ws.column_dimensions[get_column_letter(i)].width = 36
-
-    for r in all_rows:
-        del r["_author_codes"]
-
-    out_path = os.path.abspath(output_path)
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    wb.save(out_path)
-
-
-def export_docx_paths_to_xlsx(
-    paths: List[str], output_path: str
-) -> tuple[int, List[str]]:
-    """
-    Process .docx files and write one .xlsx.
-
-    Returns:
-        (number of rows written, basenames skipped because they had no comments)
-
-    Raises:
-        ValueError: nothing to export
-        ImportError: openpyxl not installed
-    """
-    try:
-        import openpyxl  # noqa: F401
-    except ImportError as e:
-        raise ImportError(
-            "Install openpyxl: python -m pip install openpyxl"
-        ) from e
-
-    all_rows: List[dict] = []
-    skipped: List[str] = []
-    seg_id = 1
-    for p in paths:
-        p = os.path.abspath(p)
-        if not os.path.isfile(p):
-            continue
-        label = os.path.basename(p)
-        per = extract_file(p)
-        if not per:
-            skipped.append(label)
-            continue
-        for block in build_segment_rows(label, per):
-            block["Segment_ID"] = seg_id
-            seg_id += 1
-            all_rows.append(block)
-
-    if not all_rows:
-        raise ValueError(
-            "No data to export. Check that your .docx files contain Word comments."
-        )
-
-    _write_excel_workbook(all_rows, output_path)
-    return len(all_rows), skipped
+def _author_key(name: str) -> str:
+    n = (name or "").strip()
+    return n if n else "(no author)"
 
 
 def build_segment_rows(
     file_label: str, per_comment: List[Tuple[str, str, str, str]]
 ) -> List[dict]:
-    """
-    Group by normalized segment within the file; merge codes with '; ' per author only.
-    Different authors become separate Excel columns (not merged in one cell).
-    """
     groups: Dict[str, List[Tuple[str, str, str, str]]] = defaultdict(list)
     for row in per_comment:
         cid, author, seg, code = row
@@ -265,31 +446,122 @@ def build_segment_rows(
                 "File_Name": file_label,
                 "Coding_Segment": seg_text,
                 "_author_codes": author_codes,
-            }
+            },
         )
     return out
 
 
+def _write_coder_matrix_workbook(all_rows: List[dict], output_path: str) -> None:
+    author_columns: List[str] = sorted({a for r in all_rows for a in r["_author_codes"].keys()})
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Coding"
+    cols = ["Segment_ID", "File_Name", "Coding_Segment", *author_columns]
+    ws.append(cols)
+    for r in all_rows:
+        ac = r["_author_codes"]
+        row_cells = [r["Segment_ID"], r["File_Name"], r["Coding_Segment"]]
+        row_cells.extend(ac.get(name, "") for name in author_columns)
+        ws.append(row_cells)
+
+    wrap_top = Alignment(wrap_text=True, vertical="top")
+    max_col = 3 + len(author_columns)
+    for row in ws.iter_rows(min_row=2, min_col=2, max_col=max_col):
+        for cell in row:
+            cell.alignment = wrap_top
+    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 88
+    for i, _name in enumerate(author_columns, start=4):
+        ws.column_dimensions[get_column_letter(i)].width = 36
+
+    for r in all_rows:
+        del r["_author_codes"]
+
+    out_path = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    wb.save(out_path)
+
+
+def export_coder_matrix_to_xlsx(
+    paths: List[str],
+    output_path: str,
+) -> tuple[int, List[str]]:
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError as e:
+        raise ImportError("Install openpyxl: python -m pip install openpyxl") from e
+
+    all_rows: List[dict] = []
+    skipped: List[str] = []
+    seg_id = 1
+    for p in paths:
+        p = os.path.abspath(p)
+        if not os.path.isfile(p):
+            continue
+        label = os.path.basename(p)
+        per = extract_file_legacy(p)
+        if not per:
+            skipped.append(label)
+            continue
+        for block in build_segment_rows(label, per):
+            block["Segment_ID"] = seg_id
+            seg_id += 1
+            all_rows.append(block)
+
+    if not all_rows:
+        raise ValueError(
+            "No data to export. Check that your .docx files contain Word comments.",
+        )
+
+    _write_coder_matrix_workbook(all_rows, output_path)
+    return len(all_rows), skipped
+
+
+def export_docx_paths_to_xlsx(
+    paths: List[str],
+    output_path: str,
+    *,
+    coder_matrix: bool = False,
+) -> tuple[int, List[str]]:
+    if coder_matrix:
+        return export_coder_matrix_to_xlsx(paths, output_path)
+    return export_highlight_paths_to_xlsx(paths, output_path)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Word comments -> Excel: one row per segment, one column per coder (author)."
+        description=(
+            "Word coding → Excel. Default: no/quote/code from highlights + comments. "
+            "Use --coder-matrix for one column per comment author."
+        ),
     )
     ap.add_argument(
         "input",
         nargs="+",
-        help="One or more .docx paths, or use --dir for a folder of .docx",
+        help="One or more .docx paths (or folders with --dir)",
     )
     ap.add_argument(
         "-d",
         "--dir",
         action="store_true",
-        help="Treat input as directory(ies): process all *.docx inside",
+        help="Treat inputs as folders; process each *.docx inside",
     )
     ap.add_argument(
         "-o",
         "--output",
         required=True,
         help="Output .xlsx path",
+    )
+    ap.add_argument(
+        "--coder-matrix",
+        action="store_true",
+        help="Legacy layout: Segment_ID / File_Name / Coding_Segment + one column per author",
     )
     args = ap.parse_args()
 
@@ -309,7 +581,11 @@ def main() -> None:
 
     out_path = os.path.abspath(args.output)
     try:
-        n, skipped = export_docx_paths_to_xlsx(paths, out_path)
+        n, skipped = export_docx_paths_to_xlsx(
+            paths,
+            out_path,
+            coder_matrix=args.coder_matrix,
+        )
     except ValueError as e:
         raise SystemExit(str(e)) from e
     except ImportError as e:
