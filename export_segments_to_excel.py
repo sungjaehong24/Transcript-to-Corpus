@@ -13,6 +13,8 @@ anchor in the document body.
 
 **Legacy:** `--coder-matrix` restores the older layout (one column per Word comment author).
 
+Default sheet columns: **no**, **id** (source `.docx` stem), **quote**, **code**.
+
 Requires: openpyxl. Reads OOXML inside .docx (zip files). Offline; no APIs.
 """
 
@@ -193,6 +195,7 @@ def _segments_highlighted_outside_comments(
 
 def _rows_from_highlight_only_segments(
     hl_segments: Sequence[Tuple[int, List[ET.Element]]],
+    file_stem: str,
 ) -> List[dict]:
     rows: List[dict] = []
     for doc_pos, ordered_runs in hl_segments:
@@ -206,6 +209,7 @@ def _rows_from_highlight_only_segments(
         rows.append(
             {
                 "comment_id": f"hl-{doc_pos}",
+                "id": file_stem,
                 "quote": quote_norm,
                 "code": code.strip(),
                 "raw_comment": "",
@@ -267,6 +271,11 @@ def _collect_run_plain_text(run: ET.Element) -> str:
 def _norm_hi_text(s: str) -> str:
     s = s.replace("\u00a0", " ")
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _docx_stem_label(path: str) -> str:
+    """File label for column id: basename without extension (e.g. P19.docx → P19)."""
+    return os.path.splitext(os.path.basename(path))[0]
 
 
 def _highlight_family_bucket(raw: Optional[str]) -> str:
@@ -484,7 +493,10 @@ def _merge_highlight_rows_same_quote(rows: List[dict]) -> List[dict]:
                 if lbl:
                     uniq[lbl] = None
         code_cell = "; ".join(_canonical_sort_code_labels(list(uniq.keys())))
-        out.append({"quote": quote, "code": code_cell, "_warns": merged_warns})
+        file_id = str(grp[0].get("id", ""))
+        out.append(
+            {"quote": quote, "id": file_id, "code": code_cell, "_warns": merged_warns},
+        )
     return out
 
 
@@ -493,9 +505,10 @@ def extract_highlight_rows(path: str) -> List[dict]:
     Preliminary rows: every Word comment anchor, plus highlights that sit *outside*
     any comment anchor (comment balloon optional). Same-quote merge happens later.
 
-    Each dict has: comment_id, quote, code, raw_comment, author, _warns.
+    Each dict has: id (file stem), comment_id, quote, code, raw_comment, author, _warns.
     """
     rows_out: List[dict] = []
+    file_stem = _docx_stem_label(path)
     with zipfile.ZipFile(path, "r") as zf:
         try:
             doc_xml = zf.read("word/document.xml")
@@ -528,6 +541,7 @@ def extract_highlight_rows(path: str) -> List[dict]:
             rows_out.append(
                 {
                     "comment_id": cid,
+                    "id": file_stem,
                     "quote": quote_norm,
                     "code": code.strip(),
                     "raw_comment": comment_body,
@@ -538,7 +552,9 @@ def extract_highlight_rows(path: str) -> List[dict]:
             )
 
         hl_segments = _segments_highlighted_outside_comments(doc_root, intervals)
-        rows_out.extend(_rows_from_highlight_only_segments(hl_segments))
+        rows_out.extend(
+            _rows_from_highlight_only_segments(hl_segments, file_stem),
+        )
 
         rows_out.sort(
             key=lambda r: (r["_doc_order"], _cid_sort_tuple(str(r["comment_id"]))),
@@ -549,22 +565,23 @@ def extract_highlight_rows(path: str) -> List[dict]:
     return rows_out
 
 
-def _write_three_column_sheet(rows: List[dict], output_path: str) -> None:
+def _write_highlight_export_sheet(rows: List[dict], output_path: str) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Coding"
-    ws.append(["no", "quote", "code"])
+    ws.append(["no", "id", "quote", "code"])
     wrap = Alignment(wrap_text=True, vertical="top")
     for i, row in enumerate(rows, start=1):
-        ws.append([i, row["quote"], row["code"]])
+        ws.append([i, row["id"], row["quote"], row["code"]])
         for cell in ws[i + 1]:
             cell.alignment = wrap
     ws.column_dimensions["A"].width = 8
-    ws.column_dimensions["B"].width = 88
-    ws.column_dimensions["C"].width = 40
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 88
+    ws.column_dimensions["D"].width = 40
 
     out_path = os.path.abspath(output_path)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -572,7 +589,7 @@ def _write_three_column_sheet(rows: List[dict], output_path: str) -> None:
 
 
 def export_highlight_paths_to_xlsx(paths: List[str], output_path: str) -> tuple[int, List[str]]:
-    """Write merged no/quote/code export; returns (rows, skipped_basenames)."""
+    """Write merged no/id/quote/code export; returns (rows, skipped_basenames)."""
     try:
         import openpyxl  # noqa: F401
     except ImportError as e:
@@ -600,7 +617,7 @@ def export_highlight_paths_to_xlsx(paths: List[str], output_path: str) -> tuple[
             "No data to export. Add Word comments or body highlights that map to codes.",
         )
 
-    _write_three_column_sheet(all_rows, output_path)
+    _write_highlight_export_sheet(all_rows, output_path)
     return len(all_rows), skipped
 
 
@@ -753,7 +770,7 @@ def export_docx_paths_to_xlsx(
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=(
-            "Word coding → Excel. Default: no/quote/code from highlights + comments. "
+            "Word coding → Excel. Default: no/id/quote/code from highlights + comments. "
             "Use --coder-matrix for one column per comment author."
         ),
     )
