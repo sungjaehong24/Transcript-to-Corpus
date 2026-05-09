@@ -1,9 +1,14 @@
 """
-Simple tkinter GUI for exporting Word comment coding to Excel (no extra deps).
+Tkinter front-end for export_segments_to_excel (only extra runtime dep: openpyxl).
 
-Run from this folder:
+Default export: Excel columns no / quote / code (highlight colours + comment text;
+same-quote rows merged in the engine). Optional “coder matrix” mode matches CLI
+--coder-matrix.
+
+Run:
   python export_segments_gui.py
-Or double-click Run_Export_GUI.bat
+Windows shortcut:
+  Run_Export_GUI.bat
 """
 
 from __future__ import annotations
