@@ -192,7 +192,7 @@ class App(tk.Tk):
 
         msg = f"Saved {n} row(s).\n\n{out}"
         if skipped:
-            msg += "\n\nSkipped (no comments):\n• " + "\n• ".join(skipped)
+            msg += "\n\nSkipped (nothing to export):\n• " + "\n• ".join(skipped)
         self.status.config(text=f"Done — {n} row(s) → {os.path.basename(out)}")
         messagebox.showinfo("Done", msg)
 

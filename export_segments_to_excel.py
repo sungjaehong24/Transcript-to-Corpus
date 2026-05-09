@@ -7,7 +7,9 @@ anchored text merge into that row; the **code** column lists labels joined with 
 dark gray; green vs bright green). All grey-shade highlights rely on comment wording
 when appraisal codes apply, otherwise **Information Source**.
 
-Mapping matches the project’s “List of codes” table using highlight + comment text.
+Mapping matches the project’s “List of codes” table: highlight colour (+ comment when
+needed). Highlights **without** comments are exported when they fall outside any comment
+anchor in the document body.
 
 **Legacy:** `--coder-matrix` restores the older layout (one column per Word comment author).
 
@@ -23,7 +25,7 @@ import sys
 import zipfile
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -122,6 +124,97 @@ def _segment_anchor_indices(
             ei = idx
             break
     return si, ei
+
+
+def _all_comment_anchor_intervals(
+    doc_root: ET.Element, comment_ids: Iterable[str]
+) -> List[Tuple[int, int]]:
+    spans: List[Tuple[int, int]] = []
+    for cid in comment_ids:
+        si, ei = _segment_anchor_indices(doc_root, str(cid))
+        if si is None or ei is None or ei <= si:
+            continue
+        spans.append((si, ei))
+    return spans
+
+
+def _flat_index_inside_any_comment(
+    idx: int, intervals: Sequence[Tuple[int, int]]
+) -> bool:
+    return any(si < idx < ei for si, ei in intervals)
+
+
+def _segments_highlighted_outside_comments(
+    doc_root: ET.Element,
+    intervals: Sequence[Tuple[int, int]],
+) -> List[Tuple[int, List[ET.Element]]]:
+    """
+    Word comment 앵커 *밖*에서만 이어지는 하이라이트 run 묶음마다 (flat시작인덱스, runs).
+    """
+    flat = _flatten_doc(doc_root)
+    grouped: List[Tuple[int, List[ET.Element]]] = []
+    buf: List[ET.Element] = []
+    buf_fam: Optional[str] = None
+    start_idx: Optional[int] = None
+
+    def flush() -> None:
+        nonlocal buf, buf_fam, start_idx
+        if buf and start_idx is not None:
+            grouped.append((start_idx, buf[:]))
+        buf = []
+        buf_fam = None
+        start_idx = None
+
+    for idx, el in enumerate(flat):
+        if el.tag != _w("r"):
+            continue
+        if _flat_index_inside_any_comment(idx, intervals):
+            flush()
+            continue
+        raw_h = _highlight_on_run(el)
+        if not raw_h:
+            flush()
+            continue
+        fam = _highlight_family_bucket(raw_h)
+        if not buf:
+            buf = [el]
+            buf_fam = fam
+            start_idx = idx
+        elif fam == buf_fam:
+            buf.append(el)
+        else:
+            flush()
+            buf = [el]
+            buf_fam = fam
+            start_idx = idx
+    flush()
+    return grouped
+
+
+def _rows_from_highlight_only_segments(
+    hl_segments: Sequence[Tuple[int, List[ET.Element]]],
+) -> List[dict]:
+    rows: List[dict] = []
+    for doc_pos, ordered_runs in hl_segments:
+        chunks = _merged_highlight_chunks(ordered_runs)
+        hl_dom = _dominant_highlight(chunks)
+        quote = _quote_for_highlight(chunks, hl_dom) if hl_dom else ""
+        quote_norm = _format_transcript_layout(_normalize_segment_text(quote))
+        if not quote_norm.strip():
+            continue
+        code, warns = _code_from_highlight_and_comment(hl_dom, "")
+        rows.append(
+            {
+                "comment_id": f"hl-{doc_pos}",
+                "quote": quote_norm,
+                "code": code.strip(),
+                "raw_comment": "",
+                "author": "",
+                "_warns": warns,
+                "_doc_order": doc_pos,
+            },
+        )
+    return rows
 
 
 def _runs_between_anchor_indices(
@@ -397,7 +490,8 @@ def _merge_highlight_rows_same_quote(rows: List[dict]) -> List[dict]:
 
 def extract_highlight_rows(path: str) -> List[dict]:
     """
-    One preliminary row per Word comment (before same-quote merge).
+    Preliminary rows: every Word comment anchor, plus highlights that sit *outside*
+    any comment anchor (comment balloon optional). Same-quote merge happens later.
 
     Each dict has: comment_id, quote, code, raw_comment, author, _warns.
     """
@@ -409,6 +503,7 @@ def extract_highlight_rows(path: str) -> List[dict]:
             return rows_out
         doc_root = ET.fromstring(doc_xml)
         comments = _parse_comments_xml(zf)
+        intervals = _all_comment_anchor_intervals(doc_root, comments.keys())
 
         def cid_key(cid: str) -> Tuple[int | str, str]:
             return (int(cid) if cid.isdigit() else cid, cid)
@@ -438,8 +533,18 @@ def extract_highlight_rows(path: str) -> List[dict]:
                     "raw_comment": comment_body,
                     "author": author,
                     "_warns": warns,
+                    "_doc_order": si if si is not None else 2**31,
                 },
             )
+
+        hl_segments = _segments_highlighted_outside_comments(doc_root, intervals)
+        rows_out.extend(_rows_from_highlight_only_segments(hl_segments))
+
+        rows_out.sort(
+            key=lambda r: (r["_doc_order"], _cid_sort_tuple(str(r["comment_id"]))),
+        )
+        for r in rows_out:
+            del r["_doc_order"]
 
     return rows_out
 
@@ -492,7 +597,7 @@ def export_highlight_paths_to_xlsx(paths: List[str], output_path: str) -> tuple[
 
     if not all_rows:
         raise ValueError(
-            "No data to export. Check that inputs are .docx with Word comments.",
+            "No data to export. Add Word comments or body highlights that map to codes.",
         )
 
     _write_three_column_sheet(all_rows, output_path)
@@ -704,7 +809,7 @@ def main() -> None:
 
     print(f"Wrote {n} row(s) -> {out_path}")
     for s in skipped:
-        print(f"[skip] No comments or unreadable: {s}")
+        print(f"[skip] No exportable highlights/comments: {s}")
 
 
 if __name__ == "__main__":
