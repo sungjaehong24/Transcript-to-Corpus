@@ -1,9 +1,14 @@
 """
-Simple tkinter GUI for exporting Word comment coding to Excel (no extra deps).
+Tkinter front-end for export_segments_to_excel (only extra runtime dep: openpyxl).
 
-Run from this folder:
+Default export: Excel columns no / id / quote / code (id = .docx basename without extension;
+same-quote rows merged in the engine). Optional “coder matrix” mode matches CLI
+--coder-matrix.
+
+Run:
   python export_segments_gui.py
-Or double-click Run_Export_GUI.bat
+Windows shortcut:
+  Run_Export_GUI.bat
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ class App(tk.Tk):
             self,
             text=(
                 "Add coded Word (.docx) files, choose export path, Export. Default: columns "
-                "no / quote / code from highlight colours + appraisal comments "
+                "no / id / quote / code (id = file name stem) from highlights + appraisal comments "
                 '(see project “List of codes”). Tick “Coder matrix…” for legacy one-column-per-author.'
             ),
             wraplength=520,
@@ -187,7 +192,7 @@ class App(tk.Tk):
 
         msg = f"Saved {n} row(s).\n\n{out}"
         if skipped:
-            msg += "\n\nSkipped (no comments):\n• " + "\n• ".join(skipped)
+            msg += "\n\nSkipped (nothing to export):\n• " + "\n• ".join(skipped)
         self.status.config(text=f"Done — {n} row(s) → {os.path.basename(out)}")
         messagebox.showinfo("Done", msg)
 

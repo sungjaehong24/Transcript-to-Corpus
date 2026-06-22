@@ -30,6 +30,23 @@ python export_segments_gui.py
 
 Or double-click **`Run_Export_GUI.bat`** (adds `.docx` files or a whole folder, pick output `.xlsx`, then export).
 
+**Requires Python** on that PC (`pip install -r requirements.txt` once).
+
+### Standalone `.exe` (no Python on other PCs)
+
+This repo includes **`Build_GUI_EXE.bat`** (on branch `main` after merge, or download the latest project ZIP).
+
+1. On a Windows PC **with Python**, open the project folder.
+2. Double-click **`Build_GUI_EXE.bat`** (not `Run_Export_GUI.bat`).
+3. When it finishes, use **`dist\InterviewCodingToExcel.exe`** — copy only that file to colleagues.
+
+| File | What it does |
+|------|----------------|
+| `Run_Export_GUI.bat` | Runs the GUI **with Python** (no `.exe` created). |
+| `Build_GUI_EXE.bat` | **Builds** `dist\InterviewCodingToExcel.exe` (one-time on a dev PC). |
+
+If you only see `Run_Export_GUI.bat`, you may have an older **main** ZIP — use **Code → Download ZIP** after pulling the latest `main`, or clone and `git checkout cursor/codebook-highlight-export-5283`.
+
 ### Command line
 
 One or more files:
