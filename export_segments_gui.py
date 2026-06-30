@@ -9,6 +9,8 @@ Run:
   python export_segments_gui.py
 Windows shortcut:
   Run_Export_GUI.bat
+macOS shortcut:
+  Run_Export_GUI.command
 """
 
 from __future__ import annotations
@@ -79,7 +81,7 @@ class App(tk.Tk):
             height=12,
             selectmode=tk.EXTENDED,
             yscrollcommand=scroll.set,
-            font=("Consolas", 9),
+            font=("Menlo", 9) if sys.platform == "darwin" else ("Consolas", 9),
         )
         self._list.pack(side="left", fill="both", expand=True)
         scroll.config(command=self._list.yview)

@@ -20,32 +20,42 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Graphical UI (Windows-friendly)
+### Graphical UI
 
 From this folder:
 
 ```bash
-python export_segments_gui.py
+python3 export_segments_gui.py
 ```
 
-Or double-click **`Run_Export_GUI.bat`** (adds `.docx` files or a whole folder, pick output `.xlsx`, then export).
+| OS | Run with Python | Build standalone app (no Python for recipients) |
+|----|-----------------|---------------------------------------------------|
+| **Windows** | `Run_Export_GUI.bat` | `Build_GUI_EXE.bat` → `dist\InterviewCodingToExcel.exe` |
+| **macOS** | `Run_Export_GUI.command` | `Build_GUI_Mac.sh` → `dist/InterviewCodingToExcel.app` |
 
-**Requires Python** on that PC (`pip install -r requirements.txt` once).
+**Requires Python** on the machine that runs the `.bat` / `.command` or builds the app (`pip install -r requirements.txt` once).
 
-### Standalone `.exe` (no Python on other PCs)
-
-This repo includes **`Build_GUI_EXE.bat`** (on branch `main` after merge, or download the latest project ZIP).
+#### Windows — standalone `.exe`
 
 1. On a Windows PC **with Python**, open the project folder.
 2. Double-click **`Build_GUI_EXE.bat`** (not `Run_Export_GUI.bat`).
-3. When it finishes, use **`dist\InterviewCodingToExcel.exe`** — copy only that file to colleagues.
+3. Copy **`dist\InterviewCodingToExcel.exe`** to other Windows PCs.
 
-| File | What it does |
-|------|----------------|
-| `Run_Export_GUI.bat` | Runs the GUI **with Python** (no `.exe` created). |
-| `Build_GUI_EXE.bat` | **Builds** `dist\InterviewCodingToExcel.exe` (one-time on a dev PC). |
+#### macOS — standalone `.app`
 
-If you only see `Run_Export_GUI.bat`, you may have an older **main** ZIP — use **Code → Download ZIP** after pulling the latest `main`, or clone and `git checkout cursor/codebook-highlight-export-5283`.
+PyInstaller **must run on a Mac** (you cannot build a Mac app from Windows/Linux).
+
+1. Copy the project folder to a Mac with **Python 3**.
+2. In Terminal:
+   ```bash
+   cd path/to/Transcript-to-Corpus
+   chmod +x Build_GUI_Mac.sh Run_Export_GUI.command
+   ./Build_GUI_Mac.sh
+   ```
+3. Share **`dist/InterviewCodingToExcel.app`** (zip the `.app` if emailing).
+4. **First launch on another Mac:** right-click the app → **Open** (unsigned apps are blocked by Gatekeeper if you double-click). Or in Terminal: `xattr -cr InterviewCodingToExcel.app`
+
+To run from source on Mac without building: double-click **`Run_Export_GUI.command`** (after `chmod +x` once) or `python3 export_segments_gui.py`.
 
 ### Command line
 
