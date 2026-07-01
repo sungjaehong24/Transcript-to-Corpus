@@ -55,6 +55,8 @@ PyInstaller **must run on a Mac** (you cannot build a Mac app from Windows/Linux
 3. Share **`dist/InterviewCodingToExcel.app`** (zip the `.app` if emailing).
 4. **First launch on another Mac:** right-click the app → **Open** (unsigned apps are blocked by Gatekeeper if you double-click). Or in Terminal: `xattr -cr InterviewCodingToExcel.app`
 
+If the app window is **blank** (title bar only), rebuild with the latest `main` — older builds missed Tcl/Tk files for the GUI. `Build_GUI_Mac.sh` now uses `interview_coding_mac.spec` with full tkinter bundling.
+
 To run from source on Mac without building: double-click **`Run_Export_GUI.command`** (after `chmod +x` once) or `python3 export_segments_gui.py`.
 
 ### Command line

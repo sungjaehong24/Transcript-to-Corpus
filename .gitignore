@@ -1,4 +1,5 @@
 build/
 dist/
 *.spec
+!interview_coding_mac.spec
 .Python

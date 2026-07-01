@@ -38,7 +38,8 @@ echo.
   --windowed ^
   --name "InterviewCodingToExcel" ^
   --hidden-import openpyxl ^
-  --hidden-import tkinter ^
+  --hidden-import _tkinter ^
+  --collect-all tkinter ^
   export_segments_gui.py
 
 if errorlevel 1 goto :err

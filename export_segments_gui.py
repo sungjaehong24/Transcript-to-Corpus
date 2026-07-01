@@ -2,8 +2,7 @@
 Tkinter front-end for export_segments_to_excel (only extra runtime dep: openpyxl).
 
 Default export: Excel columns no / id / quote / code (id = .docx basename without extension;
-same-quote rows merged in the engine). Optional “coder matrix” mode matches CLI
---coder-matrix.
+same-quote rows merged in the engine). Optional coder matrix mode matches CLI --coder-matrix.
 
 Run:
   python export_segments_gui.py
@@ -27,54 +26,109 @@ if _SCRIPT_DIR not in sys.path:
 from export_segments_to_excel import export_docx_paths_to_xlsx
 
 
+def _prepare_gui_runtime() -> None:
+    """PyInstaller .app on macOS needs Tcl/Tk paths bundled with the executable."""
+    if sys.platform == "darwin":
+        os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base = sys._MEIPASS
+        for env_name, folder in (("TCL_LIBRARY", "_tcl_data"), ("TK_LIBRARY", "_tk_data")):
+            path = os.path.join(base, folder)
+            if os.path.isdir(path):
+                os.environ.setdefault(env_name, path)
+
+
+def _use_mac_frozen_widgets() -> bool:
+    return getattr(sys, "frozen", False) and sys.platform == "darwin"
+
+
+def _prepare_ttk_theme(root: tk.Misc) -> None:
+    if not _use_mac_frozen_widgets():
+        return
+    style = ttk.Style(root)
+    for name in ("clam", "alt", "default", "aqua"):
+        try:
+            if name in style.theme_names():
+                style.theme_use(name)
+                return
+        except tk.TclError:
+            continue
+
+
+def _button(parent: tk.Misc, **kwargs) -> tk.Button | ttk.Button:
+    if _use_mac_frozen_widgets():
+        return tk.Button(parent, **kwargs)
+    return ttk.Button(parent, **kwargs)
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Interview coding → Excel")
+        self.title("Interview coding to Excel")
         self.minsize(560, 420)
         self.paths: list[str] = []
         self._coder_matrix_legacy = tk.BooleanVar(value=False)
-        self._build()
+        _prepare_ttk_theme(self)
+        try:
+            self._build()
+        except Exception as exc:
+            messagebox.showerror(
+                "UI failed to load",
+                f"The window could not be built.\n\n{type(exc).__name__}: {exc}",
+            )
+            raise
 
     def _build(self) -> None:
         pad = {"padx": 10, "pady": 6}
+        use_tk = _use_mac_frozen_widgets()
 
-        ttk.Label(
-            self,
-            text=(
-                "Add coded Word (.docx) files, choose export path, Export. Default: columns "
-                "no / id / quote / code (id = file name stem) from highlights + appraisal comments "
-                '(see project “List of codes”). Tick “Coder matrix…” for legacy one-column-per-author.'
-            ),
-            wraplength=520,
-        ).pack(anchor="w", **pad)
+        intro = (
+            "Step 1: Click Choose Word files (.docx). "
+            "Step 2: Click Export to Excel. "
+            "Drag-and-drop is not supported. "
+            "Columns: no, id, quote, code."
+        )
+        if use_tk:
+            tk.Label(self, text=intro, wraplength=520, justify="left").pack(anchor="w", **pad)
+        else:
+            ttk.Label(self, text=intro, wraplength=520).pack(anchor="w", **pad)
 
-        ttk.Checkbutton(
-            self,
-            text="Coder matrix export (legacy: one Excel column per comment author)",
-            variable=self._coder_matrix_legacy,
-        ).pack(anchor="w", **pad)
+        if use_tk:
+            tk.Checkbutton(
+                self,
+                text="Coder matrix export (legacy: one Excel column per comment author)",
+                variable=self._coder_matrix_legacy,
+            ).pack(anchor="w", **pad)
+        else:
+            ttk.Checkbutton(
+                self,
+                text="Coder matrix export (legacy: one Excel column per comment author)",
+                variable=self._coder_matrix_legacy,
+            ).pack(anchor="w", **pad)
 
-        lf = ttk.LabelFrame(self, text="Input files")
+        if use_tk:
+            lf = tk.LabelFrame(self, text="Input files")
+        else:
+            lf = ttk.LabelFrame(self, text="Input files")
         lf.pack(fill="both", expand=True, **pad)
 
-        inner = ttk.Frame(lf)
+        inner = tk.Frame(lf) if use_tk else ttk.Frame(lf)
         inner.pack(fill="both", expand=True, padx=6, pady=6)
 
-        btn_row = ttk.Frame(inner)
+        btn_row = tk.Frame(inner) if use_tk else ttk.Frame(inner)
         btn_row.pack(fill="x")
-        ttk.Button(btn_row, text="Add files…", command=self._add_files).pack(
+        _button(btn_row, text="Choose Word files (.docx)...", command=self._add_files).pack(
             side="left", padx=(0, 8)
         )
-        ttk.Button(btn_row, text="Add folder…", command=self._add_folder).pack(
+        _button(btn_row, text="Add folder...", command=self._add_folder).pack(
             side="left", padx=(0, 8)
         )
-        ttk.Button(btn_row, text="Remove selected", command=self._remove_sel).pack(
+        _button(btn_row, text="Remove selected", command=self._remove_sel).pack(
             side="left", padx=(0, 8)
         )
-        ttk.Button(btn_row, text="Clear list", command=self._clear).pack(side="left")
+        _button(btn_row, text="Clear list", command=self._clear).pack(side="left")
 
-        scroll = ttk.Scrollbar(inner)
+        scroll = tk.Scrollbar(inner)
         scroll.pack(side="right", fill="y")
         self._list = tk.Listbox(
             inner,
@@ -86,21 +140,25 @@ class App(tk.Tk):
         self._list.pack(side="left", fill="both", expand=True)
         scroll.config(command=self._list.yview)
 
-        out_fr = ttk.LabelFrame(self, text="Output Excel")
+        if use_tk:
+            out_fr = tk.LabelFrame(self, text="Output Excel")
+        else:
+            out_fr = ttk.LabelFrame(self, text="Output Excel")
         out_fr.pack(fill="x", **pad)
-        of = ttk.Frame(out_fr)
+        of = tk.Frame(out_fr) if use_tk else ttk.Frame(out_fr)
         of.pack(fill="x", padx=6, pady=6)
         self._out = tk.StringVar(
             value=os.path.join(os.path.expanduser("~"), "Desktop", "Coding_Matrix_Result.xlsx")
         )
-        ttk.Entry(of, textvariable=self._out).pack(side="left", fill="x", expand=True)
-        ttk.Button(of, text="Save as…", command=self._pick_save).pack(
-            side="left", padx=(8, 0)
-        )
+        tk.Entry(of, textvariable=self._out).pack(side="left", fill="x", expand=True)
+        _button(of, text="Save as...", command=self._pick_save).pack(side="left", padx=(8, 0))
 
-        ttk.Button(self, text="Export to Excel", command=self._run).pack(**pad)
+        _button(self, text="Export to Excel", command=self._run).pack(**pad)
 
-        self.status = ttk.Label(self, text="", foreground="#333")
+        if use_tk:
+            self.status = tk.Label(self, text="", fg="#333")
+        else:
+            self.status = ttk.Label(self, text="", foreground="#333")
         self.status.pack(anchor="w", padx=10, pady=(0, 8))
 
     def _refresh_list(self) -> None:
@@ -160,7 +218,7 @@ class App(tk.Tk):
 
     def _hint(self) -> None:
         n = len(self.paths)
-        self.status.config(text=f"Ready — {n} file(s) in list")
+        self.status.config(text=f"Ready - {n} file(s) in list")
 
     def _run(self) -> None:
         if not self.paths:
@@ -171,7 +229,7 @@ class App(tk.Tk):
             messagebox.showwarning("Output path", "Choose where to save the .xlsx file.")
             return
         out = os.path.abspath(out)
-        self.status.config(text="Working…")
+        self.status.config(text="Working...")
         self.update_idletasks()
         try:
             n, skipped = export_docx_paths_to_xlsx(
@@ -194,12 +252,13 @@ class App(tk.Tk):
 
         msg = f"Saved {n} row(s).\n\n{out}"
         if skipped:
-            msg += "\n\nSkipped (nothing to export):\n• " + "\n• ".join(skipped)
-        self.status.config(text=f"Done — {n} row(s) → {os.path.basename(out)}")
+            msg += "\n\nSkipped (nothing to export):\n- " + "\n- ".join(skipped)
+        self.status.config(text=f"Done - {n} row(s) -> {os.path.basename(out)}")
         messagebox.showinfo("Done", msg)
 
 
 def main() -> None:
+    _prepare_gui_runtime()
     app = App()
     app.mainloop()
 

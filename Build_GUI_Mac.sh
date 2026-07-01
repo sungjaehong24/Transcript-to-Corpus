@@ -30,11 +30,7 @@ echo ""
 
 python3 -m PyInstaller \
   --noconfirm \
-  --windowed \
-  --name "InterviewCodingToExcel" \
-  --hidden-import openpyxl \
-  --hidden-import tkinter \
-  export_segments_gui.py
+  interview_coding_mac.spec
 
 APP_PATH="dist/InterviewCodingToExcel.app"
 if [[ ! -d "$APP_PATH" ]]; then
