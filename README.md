@@ -1,5 +1,6 @@
 # Transcript-to-Corpus
-Read coded interview transcripts and create coding matrix (i.e., corpus)
+Read coded interview transcripts and create coding matrix (i.e., corpus).
+
 This tool was developed with generative AI coding assistance (Claude Code and Cursor). I defined the requirements and output structure, tested the tool on real coded transcripts from a two-coder qualitative study, and directed debugging and packaging. The design decisions (segment grouping by anchor text, per-coder columns, offline processing) are mine.
 
 # Word interview coding → Excel matrix
